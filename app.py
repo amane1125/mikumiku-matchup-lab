@@ -1,28 +1,59 @@
+"""
+Mikumiku Matchup Lab
+Pokémon Showdown 公開リプレイ収集・構築別選出研究ツール
+保存先: Supabase (Streamlit Community Cloud対応)
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from collections import Counter
+from datetime import datetime
+from typing import Any
+
+import pandas as pd
+import requests
+import streamlit as st
+from supabase import Client, create_client
+
+DEFAULT_FORMAT = "gen9championsvgc2026regmc"
+DEFAULT_BOTS = ["mikumiku37", "mikumiku38"]
+API_ROOT = "https://replay.pokemonshowdown.com"
+HTTP_HEADERS = {
+    "User-Agent": "Mikumiku-Matchup-Lab/1.0 (public replay research)"
+}
+
+@st.cache_resource
+def get_supabase() -> Client:
+    """Create a cached Supabase client from Streamlit secrets."""
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+    except Exception as exc:
+        raise RuntimeError(
+            "Supabaseの接続設定がありません。Streamlit Secretsに "
+            "SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY を設定してください。"
+        ) from exc
+    if not url or not key:
+        raise RuntimeError(
+            "Supabaseの接続設定が空です。SUPABASE_URL と "
+            "SUPABASE_SERVICE_ROLE_KEY を確認してください。"
+        )
+    return create_client(str(url), str(key))
+
+
 def init_db() -> None:
-    """Initialize the local SQLite cache used by this version of the app."""
-    with db() as con:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS replays (
-                replay_id TEXT PRIMARY KEY,
-                replay_url TEXT,
-                format_id TEXT,
-                uploadtime INTEGER,
-                rating INTEGER,
-                p1 TEXT,
-                p2 TEXT,
-                winner TEXT,
-                p1_team TEXT,
-                p2_team TEXT,
-                p1_selected TEXT,
-                p2_selected TEXT,
-                p1_leads TEXT,
-                p2_leads TEXT,
-                selection_confidence TEXT,
-                log_text TEXT,
-                fetched_at TEXT
-            )
-        """)
-        con.commit()
+    """Verify that the Supabase table is reachable; schema is managed in Supabase."""
+    try:
+        get_supabase().table("replays").select("replay_id").limit(1).execute()
+    except Exception as exc:
+        raise RuntimeError(
+            "Supabaseの public.replays テーブルに接続できません。"
+            "同梱の supabase_schema.sql をSQL Editorで実行し、Secretsを確認してください。"
+            f" 詳細: {exc}"
+        ) from exc
 
 
 def fetch_json(url: str, params: dict | None = None, timeout: int = 25) -> Any:
@@ -160,10 +191,20 @@ def upsert_replay(item: dict, format_id: str, requested_bot: str) -> tuple[bool,
     replay_id = get_replay_id(item)
     if not replay_id:
         return False, "IDを判定できません"
-    with db() as con:
-        exists = con.execute("SELECT replay_id FROM replays WHERE replay_id=?", (replay_id,)).fetchone()
-        if exists:
+
+    client = get_supabase()
+    try:
+        existing = (
+            client.table("replays")
+            .select("replay_id")
+            .eq("replay_id", replay_id)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
             return False, "既に保存済み"
+    except Exception as exc:
+        raise RuntimeError(f"Supabaseの既存データ確認に失敗: {exc}") from exc
 
     detail = replay_detail(replay_id)
     log_text = detail.get("log") or ""
@@ -171,41 +212,60 @@ def upsert_replay(item: dict, format_id: str, requested_bot: str) -> tuple[bool,
     p2 = detail.get("p2") or item.get("p2") or ""
     parsed = parse_log(log_text, p1, p2)
 
-    # Replay JSON fields may use alternate metadata names.
     p1 = parsed["players"].get("p1") or p1
     p2 = parsed["players"].get("p2") or p2
     actual_format = str(detail.get("formatid") or detail.get("format") or format_id).strip().lower()
     if actual_format != DEFAULT_FORMAT:
         return False, f"対象外フォーマットのためスキップ: {actual_format}"
+
     uploadtime = detail.get("uploadtime") or item.get("uploadtime")
     rating = detail.get("rating") or item.get("rating")
-    p1_team = parsed["teams"]["p1"]
-    p2_team = parsed["teams"]["p2"]
-
-    with db() as con:
-        con.execute("""
-            INSERT OR REPLACE INTO replays (
-                replay_id, replay_url, format_id, uploadtime, rating, p1, p2, winner,
-                p1_team, p2_team, p1_selected, p2_selected, p1_leads, p2_leads,
-                selection_confidence, log_text, fetched_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            replay_id, f"{API_ROOT}/{replay_id}", actual_format, uploadtime, rating,
-            p1, p2, parsed["winner"], json.dumps(p1_team, ensure_ascii=False),
-            json.dumps(p2_team, ensure_ascii=False),
-            json.dumps(parsed["selected"]["p1"], ensure_ascii=False),
-            json.dumps(parsed["selected"]["p2"], ensure_ascii=False),
-            json.dumps(parsed["leads"]["p1"], ensure_ascii=False),
-            json.dumps(parsed["leads"]["p2"], ensure_ascii=False),
-            json.dumps(parsed["confidence"], ensure_ascii=False),
-            log_text, datetime.now().isoformat(timespec="seconds")
-        ))
-    return True, "保存しました"
+    record = {
+        "replay_id": replay_id,
+        "replay_url": f"{API_ROOT}/{replay_id}",
+        "format_id": actual_format,
+        "uploadtime": int(uploadtime) if uploadtime not in (None, "") else None,
+        "rating": int(rating) if rating not in (None, "") else None,
+        "p1": p1,
+        "p2": p2,
+        "winner": parsed["winner"],
+        "p1_team": json.dumps(parsed["teams"]["p1"], ensure_ascii=False),
+        "p2_team": json.dumps(parsed["teams"]["p2"], ensure_ascii=False),
+        "p1_selected": json.dumps(parsed["selected"]["p1"], ensure_ascii=False),
+        "p2_selected": json.dumps(parsed["selected"]["p2"], ensure_ascii=False),
+        "p1_leads": json.dumps(parsed["leads"]["p1"], ensure_ascii=False),
+        "p2_leads": json.dumps(parsed["leads"]["p2"], ensure_ascii=False),
+        "selection_confidence": json.dumps(parsed["confidence"], ensure_ascii=False),
+        "log_text": log_text,
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        client.table("replays").upsert(record, on_conflict="replay_id").execute()
+    except Exception as exc:
+        raise RuntimeError(f"Supabaseへの保存に失敗: {exc}") from exc
+    return True, "Supabaseに保存しました"
 
 
 def load_replays() -> pd.DataFrame:
-    with db() as con:
-        return pd.read_sql_query("SELECT * FROM replays ORDER BY uploadtime DESC", con)
+    """Read all rows in pages to avoid Supabase's default row limit."""
+    client = get_supabase()
+    records: list[dict] = []
+    page_size = 1000
+    offset = 0
+    while True:
+        response = (
+            client.table("replays")
+            .select("*")
+            .order("uploadtime", desc=True)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        records.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return pd.DataFrame(records)
 
 
 def as_list(value: Any) -> list[str]:
@@ -242,7 +302,7 @@ with st.sidebar:
     collect = st.button("🔄 公開リプレイを収集", type="primary", use_container_width=True)
     st.divider()
     st.header("分析条件")
-    bot_filter = st.selectbox("分析対象", ["mikumiku37", "mikumiku38", "両方"], index=0)
+    st.caption("分析対象：mikumiku37 と mikumiku38 を統合して集計")
     sheet_mode = st.radio("情報条件", ["クローズド", "OTS"], horizontal=True,
                           help="これは分析時の情報フィルターです。公開リプレイの内容自体が当時の情報開示を完全に示すとは限りません。")
     st.caption("注意：Closed / OTSは現在、表示上の分析条件です。公開リプレイだけでは対戦前の情報開示状態を完全復元できません。")
@@ -305,11 +365,8 @@ def bot_side(row: pd.Series, names: list[str]) -> str | None:
         return "p2"
     return None
 
-if bot_filter == "両方":
-    target_names = ["mikumiku37", "mikumiku38"]
-else:
-    target_names = [bot_filter]
-
+# 2アカウントを「自分側」として統合。1試合につき1行（replay_id）だけを集計する。
+target_names = DEFAULT_BOTS
 df["bot_side"] = df.apply(lambda row: bot_side(row, target_names), axis=1)
 bot_df = df[df["bot_side"].notna()].copy()
 df["bot_side_all"] = df.apply(lambda row: bot_side(row, DEFAULT_BOTS), axis=1)
@@ -338,7 +395,6 @@ for _, row in bot_df.iterrows():
     key = team_key(team)
     team_rows.append({
         "構築キー": key,
-        "BOT": bot_name,
         "構築（確認できた6体）": " / ".join(team),
         "相手の6体": " / ".join(opp_team),
         "勝敗": "勝ち" if won is True else ("負け" if won is False else "不明"),
@@ -370,7 +426,7 @@ else:
     c.metric("相手の並びの種類", selected_team_df["相手の6体"].nunique())
 
     st.dataframe(
-        selected_team_df[["BOT", "相手の6体", "勝敗", "レート", "日時", "選出判定",
+        selected_team_df[["相手の6体", "勝敗", "レート", "日時", "選出判定",
                           "先発候補（ログ上の初登場2体）", "選出候補（ログ上で場に出た最大4体）", "リプレイ"]],
         use_container_width=True, hide_index=True,
         column_config={"リプレイ": st.column_config.LinkColumn("リプレイ", display_text="開く")}
@@ -429,4 +485,4 @@ with st.expander("クローズド／OTSの扱いとデータ品質について")
     - 公開リプレイ検索に結果がない場合、非公開リプレイや保存されていない対戦は取得できません。
     """)
 
-st.caption("Mikumiku Matchup Lab v0.1 · データはローカルの SQLite に保存されます。")
+st.caption("Mikumiku Matchup Lab v0.2 · Supabaseに保存。mikumiku37 / mikumiku38 は統合して分析します。")
