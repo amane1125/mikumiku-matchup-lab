@@ -43,9 +43,11 @@ def init_db() -> None:
     try:
         get_supabase().table("replays").select("replay_id").limit(1).execute()
     except Exception as exc:
+        # Include the original exception type/message so Streamlit can show the
+        # actionable cause. Do not print or log the Supabase key itself.
         raise RuntimeError(
-            "Supabaseの replays テーブルに接続できません。supabase_schema.sql のSQLを "
-            "Supabase SQL Editorで実行し、Secretsの設定を確認してください。"
+            "Supabaseの replays テーブルに接続できません。"
+            f"原因: {type(exc).__name__}: {exc}"
         ) from exc
 
 
