@@ -1,52 +1,28 @@
-from __future__ import annotations
-
-import json
-import re
-import sqlite3
-import time
-from collections import Counter, defaultdict
-from datetime import datetime
-from itertools import combinations
-from pathlib import Path
-from typing import Any
-from urllib.parse import urlencode
-
-import pandas as pd
-import requests
-import streamlit as st
-
-APP_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DIR / "mikumiku_lab.sqlite3"
-API_ROOT = "https://replay.pokemonshowdown.com"
-DEFAULT_FORMAT = "gen9championsvgc2026regmc"
-DEFAULT_BOTS = ["mikumiku37", "mikumiku38"]
-HTTP_HEADERS = {"User-Agent": "MikumikuMatchupLab/0.1 (replay research tool)"}
-
-
-# ----------------------------- Database ------------------------------------
-def db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH, check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    return con
-
-
 def init_db() -> None:
-    """Check Supabase reachability and show actionable, secret-safe diagnostics."""
-    try:
-        get_supabase().table("replays").select("replay_id").limit(1).execute()
-    except Exception as exc:
-        detail = str(exc)
-        hint = ""
-        if "permission denied for table replays" in detail or "42501" in detail:
-            hint = "\\n\\n対処: Supabase SQL Editorで supabase_schema.sql を再実行し、service_roleにCRUD権限を付与してください。"
-        elif "relation" in detail and "does not exist" in detail:
-            hint = "\\n\\n対処: public.replays テーブルの存在を確認してください。"
-        elif "Invalid API key" in detail or "401" in detail:
-            hint = "\\n\\n対処: Streamlit SecretsのProject URLとサーバー用Secret keyを確認してください。"
-        raise RuntimeError(
-            "Supabaseの replays テーブルに接続できません。"
-            f"\\n原因: {type(exc).__name__}: {detail}{hint}"
-        ) from exc
+    """Initialize the local SQLite cache used by this version of the app."""
+    with db() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS replays (
+                replay_id TEXT PRIMARY KEY,
+                replay_url TEXT,
+                format_id TEXT,
+                uploadtime INTEGER,
+                rating INTEGER,
+                p1 TEXT,
+                p2 TEXT,
+                winner TEXT,
+                p1_team TEXT,
+                p2_team TEXT,
+                p1_selected TEXT,
+                p2_selected TEXT,
+                p1_leads TEXT,
+                p2_leads TEXT,
+                selection_confidence TEXT,
+                log_text TEXT,
+                fetched_at TEXT
+            )
+        """)
+        con.commit()
 
 
 def fetch_json(url: str, params: dict | None = None, timeout: int = 25) -> Any:
