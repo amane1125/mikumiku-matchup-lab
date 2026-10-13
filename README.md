@@ -61,3 +61,12 @@ For local run, create `.streamlit/secrets.toml` with the same two values. Do not
 - Team grouping is based on the six species in team preview; it cannot reliably distinguish different move/item/ability/Tera sets.
 - Pokémon that never entered the field may be impossible to recover as selected. The app labels these as observed entries, not confirmed full selections.
 - Closed-sheet and OTS are currently analysis labels/filters, not a complete pre-battle-information reconstruction engine.
+
+
+## Improvement patch notes
+- Explicit CRUD grants for `service_role` address `permission denied for table replays`.
+- Better diagnostics for permission, missing-table, and invalid-key errors.
+- Replay records with a non-Reg M-C actual format are skipped.
+- Invalid upload timestamps no longer interrupt collection.
+- Sidebar shows DB connection status and loaded row count.
+- Closed/OTS is clearly documented as a label only; replay logs cannot fully reconstruct pre-battle information.

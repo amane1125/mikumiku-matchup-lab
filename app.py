@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -13,41 +14,38 @@ from urllib.parse import urlencode
 import pandas as pd
 import requests
 import streamlit as st
-from supabase import create_client
 
 APP_DIR = Path(__file__).resolve().parent
+DB_PATH = APP_DIR / "mikumiku_lab.sqlite3"
 API_ROOT = "https://replay.pokemonshowdown.com"
 DEFAULT_FORMAT = "gen9championsvgc2026regmc"
 DEFAULT_BOTS = ["mikumiku37", "mikumiku38"]
-HTTP_HEADERS = {"User-Agent": "MikumikuMatchupLab/0.2 (replay research tool)"}
+HTTP_HEADERS = {"User-Agent": "MikumikuMatchupLab/0.1 (replay research tool)"}
 
-@st.cache_resource
-def get_supabase():
-    """Create a server-side Supabase client using Streamlit Secrets."""
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
-    except Exception as exc:
-        raise RuntimeError(
-            "Supabaseの接続設定がありません。Streamlit CloudのApp settings → Secretsに "
-            "SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY を設定してください。"
-        ) from exc
-    if not url or not key:
-        raise RuntimeError("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY が空です。")
-    return create_client(url, key)
+
+# ----------------------------- Database ------------------------------------
+def db() -> sqlite3.Connection:
+    con = sqlite3.connect(DB_PATH, check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    return con
 
 
 def init_db() -> None:
-    """Supabase table is created once manually using supabase_schema.sql."""
-    # Test the connection and table availability early, with a clear error.
+    """Check Supabase reachability and show actionable, secret-safe diagnostics."""
     try:
         get_supabase().table("replays").select("replay_id").limit(1).execute()
     except Exception as exc:
-        # Include the original exception type/message so Streamlit can show the
-        # actionable cause. Do not print or log the Supabase key itself.
+        detail = str(exc)
+        hint = ""
+        if "permission denied for table replays" in detail or "42501" in detail:
+            hint = "\\n\\n対処: Supabase SQL Editorで supabase_schema.sql を再実行し、service_roleにCRUD権限を付与してください。"
+        elif "relation" in detail and "does not exist" in detail:
+            hint = "\\n\\n対処: public.replays テーブルの存在を確認してください。"
+        elif "Invalid API key" in detail or "401" in detail:
+            hint = "\\n\\n対処: Streamlit SecretsのProject URLとサーバー用Secret keyを確認してください。"
         raise RuntimeError(
             "Supabaseの replays テーブルに接続できません。"
-            f"原因: {type(exc).__name__}: {exc}"
+            f"\\n原因: {type(exc).__name__}: {detail}{hint}"
         ) from exc
 
 
@@ -186,13 +184,10 @@ def upsert_replay(item: dict, format_id: str, requested_bot: str) -> tuple[bool,
     replay_id = get_replay_id(item)
     if not replay_id:
         return False, "IDを判定できません"
-    client = get_supabase()
-    try:
-        exists = client.table("replays").select("replay_id").eq("replay_id", replay_id).limit(1).execute()
-        if exists.data:
+    with db() as con:
+        exists = con.execute("SELECT replay_id FROM replays WHERE replay_id=?", (replay_id,)).fetchone()
+        if exists:
             return False, "既に保存済み"
-    except Exception as exc:
-        return False, f"DB確認失敗: {exc}"
 
     detail = replay_detail(replay_id)
     log_text = detail.get("log") or ""
@@ -200,59 +195,41 @@ def upsert_replay(item: dict, format_id: str, requested_bot: str) -> tuple[bool,
     p2 = detail.get("p2") or item.get("p2") or ""
     parsed = parse_log(log_text, p1, p2)
 
+    # Replay JSON fields may use alternate metadata names.
     p1 = parsed["players"].get("p1") or p1
     p2 = parsed["players"].get("p2") or p2
-    actual_format = detail.get("formatid") or detail.get("format") or format_id
+    actual_format = str(detail.get("formatid") or detail.get("format") or format_id).strip().lower()
+    if actual_format != DEFAULT_FORMAT:
+        return False, f"対象外フォーマットのためスキップ: {actual_format}"
     uploadtime = detail.get("uploadtime") or item.get("uploadtime")
     rating = detail.get("rating") or item.get("rating")
     p1_team = parsed["teams"]["p1"]
     p2_team = parsed["teams"]["p2"]
 
-    record = {
-        "replay_id": replay_id,
-        "replay_url": f"{API_ROOT}/{replay_id}",
-        "format_id": actual_format,
-        "uploadtime": int(uploadtime) if uploadtime else None,
-        "rating": int(rating) if rating is not None and str(rating).isdigit() else None,
-        "p1": p1,
-        "p2": p2,
-        "winner": parsed["winner"],
-        "p1_team": json.dumps(p1_team, ensure_ascii=False),
-        "p2_team": json.dumps(p2_team, ensure_ascii=False),
-        "p1_selected": json.dumps(parsed["selected"]["p1"], ensure_ascii=False),
-        "p2_selected": json.dumps(parsed["selected"]["p2"], ensure_ascii=False),
-        "p1_leads": json.dumps(parsed["leads"]["p1"], ensure_ascii=False),
-        "p2_leads": json.dumps(parsed["leads"]["p2"], ensure_ascii=False),
-        "selection_confidence": json.dumps(parsed["confidence"], ensure_ascii=False),
-        "log_text": log_text,
-        "fetched_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    try:
-        client.table("replays").upsert(record, on_conflict="replay_id").execute()
-    except Exception as exc:
-        return False, f"Supabase保存失敗: {exc}"
-    return True, "Supabaseに保存しました"
+    with db() as con:
+        con.execute("""
+            INSERT OR REPLACE INTO replays (
+                replay_id, replay_url, format_id, uploadtime, rating, p1, p2, winner,
+                p1_team, p2_team, p1_selected, p2_selected, p1_leads, p2_leads,
+                selection_confidence, log_text, fetched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            replay_id, f"{API_ROOT}/{replay_id}", actual_format, uploadtime, rating,
+            p1, p2, parsed["winner"], json.dumps(p1_team, ensure_ascii=False),
+            json.dumps(p2_team, ensure_ascii=False),
+            json.dumps(parsed["selected"]["p1"], ensure_ascii=False),
+            json.dumps(parsed["selected"]["p2"], ensure_ascii=False),
+            json.dumps(parsed["leads"]["p1"], ensure_ascii=False),
+            json.dumps(parsed["leads"]["p2"], ensure_ascii=False),
+            json.dumps(parsed["confidence"], ensure_ascii=False),
+            log_text, datetime.now().isoformat(timespec="seconds")
+        ))
+    return True, "保存しました"
 
 
 def load_replays() -> pd.DataFrame:
-    client = get_supabase()
-    rows = []
-    page_size = 1000
-    offset = 0
-    while True:
-        result = (
-            client.table("replays")
-            .select("*")
-            .order("uploadtime", desc=True)
-            .range(offset, offset + page_size - 1)
-            .execute()
-        )
-        batch = result.data or []
-        rows.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-    return pd.DataFrame(rows)
+    with db() as con:
+        return pd.read_sql_query("SELECT * FROM replays ORDER BY uploadtime DESC", con)
 
 
 def as_list(value: Any) -> list[str]:
@@ -271,6 +248,8 @@ def winner_for_player(row: pd.Series, player: str) -> bool | None:
 
 # ----------------------------- Streamlit UI --------------------------------
 st.set_page_config(page_title="Mikumiku Matchup Lab", page_icon="🎮", layout="wide")
+init_db()
+
 st.title("🎮 Mikumiku Matchup Lab")
 st.caption("Pokémon Showdown 公開リプレイ収集・構築別選出研究ツール")
 
@@ -290,7 +269,7 @@ with st.sidebar:
     bot_filter = st.selectbox("分析対象", ["mikumiku37", "mikumiku38", "両方"], index=0)
     sheet_mode = st.radio("情報条件", ["クローズド", "OTS"], horizontal=True,
                           help="これは分析時の情報フィルターです。公開リプレイの内容自体が当時の情報開示を完全に示すとは限りません。")
-    st.caption("クローズド分析では、相手の技・持ち物等を勝手に補完しません。")
+    st.caption("注意：Closed / OTSは現在、表示上の分析条件です。公開リプレイだけでは対戦前の情報開示状態を完全復元できません。")
 
 if collect:
     if not bots:
@@ -323,13 +302,7 @@ if collect:
         if log_rows:
             st.dataframe(pd.DataFrame(log_rows), use_container_width=True, hide_index=True)
 
-try:
-    init_db()
-    df = load_replays()
-except Exception as exc:
-    st.error(str(exc))
-    st.stop()
-
+df = load_replays()
 if not df.empty:
     df = df[df["format_id"].fillna("").str.lower() == DEFAULT_FORMAT].copy()
 
@@ -480,4 +453,4 @@ with st.expander("クローズド／OTSの扱いとデータ品質について")
     - 公開リプレイ検索に結果がない場合、非公開リプレイや保存されていない対戦は取得できません。
     """)
 
-st.caption("Mikumiku Matchup Lab v0.2 · Supabase永続化版 · データはSupabaseのPostgreSQLに保存されます。")
+st.caption("Mikumiku Matchup Lab v0.1 · データはローカルの SQLite に保存されます。")
