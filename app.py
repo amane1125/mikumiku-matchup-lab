@@ -97,8 +97,12 @@ def parse_log(log_text: str, p1: str = "", p2: str = "") -> dict:
                 species = species_from_details(parts[3])
                 if species and species not in teams[side]:
                     teams[side].append(species)
-        elif tag == "switch" and len(parts) >= 4:
-            side = parts[2].split(":", 1)[0].strip()
+        elif tag in ("switch", "drag", "replace") and len(parts) >= 4:
+            # Doubles logs identify active slots as p1a/p1b/p2a/p2b.
+            # Normalize the slot identifier to its owning player (p1/p2).
+            slot = parts[2].split(":", 1)[0].strip().lower()
+            match = re.match(r"^(p[12])(?:[a-z])?$", slot)
+            side = match.group(1) if match else None
             if side in entered:
                 species = species_from_details(parts[3])
                 if species and species not in entered[side]:
@@ -268,6 +272,37 @@ def load_replays() -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def reprocess_saved_selection_data() -> tuple[int, int]:
+    """Re-parse stored public logs to repair selection data without refetching replays."""
+    client = get_supabase()
+    response = client.table("replays").select(
+        "replay_id,p1,p2,log_text"
+    ).eq("format_id", DEFAULT_FORMAT).execute()
+    rows = response.data or []
+    updated = 0
+    empty_logs = 0
+    for row in rows:
+        log_text = row.get("log_text") or ""
+        if not log_text.strip():
+            empty_logs += 1
+            continue
+        parsed = parse_log(log_text, row.get("p1") or "", row.get("p2") or "")
+        client.table("replays").update({
+            "p1": parsed["players"].get("p1") or row.get("p1") or "",
+            "p2": parsed["players"].get("p2") or row.get("p2") or "",
+            "winner": parsed["winner"],
+            "p1_team": json.dumps(parsed["teams"]["p1"], ensure_ascii=False),
+            "p2_team": json.dumps(parsed["teams"]["p2"], ensure_ascii=False),
+            "p1_selected": json.dumps(parsed["selected"]["p1"], ensure_ascii=False),
+            "p2_selected": json.dumps(parsed["selected"]["p2"], ensure_ascii=False),
+            "p1_leads": json.dumps(parsed["leads"]["p1"], ensure_ascii=False),
+            "p2_leads": json.dumps(parsed["leads"]["p2"], ensure_ascii=False),
+            "selection_confidence": json.dumps(parsed["confidence"], ensure_ascii=False),
+        }).eq("replay_id", row["replay_id"]).execute()
+        updated += 1
+    return updated, empty_logs
+
+
 def as_list(value: Any) -> list[str]:
     try:
         parsed = json.loads(value or "[]")
@@ -306,6 +341,25 @@ with st.sidebar:
     sheet_mode = st.radio("情報条件", ["クローズド", "OTS"], horizontal=True,
                           help="これは分析時の情報フィルターです。公開リプレイの内容自体が当時の情報開示を完全に示すとは限りません。")
     st.caption("注意：Closed / OTSは現在、表示上の分析条件です。公開リプレイだけでは対戦前の情報開示状態を完全復元できません。")
+
+with st.sidebar:
+    st.divider()
+    repair_selection = st.button(
+        "🛠️ 保存済みリプレイの選出情報を再解析",
+        use_container_width=True,
+        help="保存済みのログを修正版パーサーで読み直します。ログ本文が保存されているリプレイが対象です。",
+    )
+
+if repair_selection:
+    try:
+        with st.spinner("保存済みログから選出情報を再解析しています…"):
+            updated_count, empty_log_count = reprocess_saved_selection_data()
+        st.success(f"再解析完了：{updated_count} 件を更新しました。")
+        if empty_log_count:
+            st.warning(f"ログ本文が保存されていないため、{empty_log_count} 件は再解析できません。")
+        st.rerun()
+    except Exception as exc:
+        st.error(f"再解析に失敗しました: {exc}")
 
 if collect:
     if not bots:
@@ -491,4 +545,4 @@ with st.expander("クローズド／OTSの扱いとデータ品質について")
     - 公開リプレイ検索に結果がない場合、非公開リプレイや保存されていない対戦は取得できません。
     """)
 
-st.caption("Mikumiku Matchup Lab v0.2 · Supabaseに保存。mikumiku37 / mikumiku38 は統合して分析します。")
+st.caption("Mikumiku Matchup Lab v0.3 · 選出ログ解析を修正。mikumiku37 / mikumiku38 は統合して分析します。")
