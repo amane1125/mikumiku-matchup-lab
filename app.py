@@ -272,35 +272,68 @@ def load_replays() -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def reprocess_saved_selection_data() -> tuple[int, int]:
-    """Re-parse stored public logs to repair selection data without refetching replays."""
+def reprocess_saved_selection_data() -> tuple[int, int, int, int]:
+    """Re-parse stored logs; fetch missing log bodies from Showdown when possible.
+
+    Returns (updated_rows, rows_still_without_log, p1_rows_with_selection, p2_rows_with_selection).
+    """
     client = get_supabase()
-    response = client.table("replays").select(
-        "replay_id,p1,p2,log_text"
-    ).eq("format_id", DEFAULT_FORMAT).execute()
-    rows = response.data or []
+    rows: list[dict] = []
+    page_size = 500
+    offset = 0
+    while True:
+        response = (
+            client.table("replays")
+            .select("replay_id,p1,p2,log_text,format_id")
+            .eq("format_id", DEFAULT_FORMAT)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
     updated = 0
     empty_logs = 0
+    p1_nonempty = 0
+    p2_nonempty = 0
     for row in rows:
         log_text = row.get("log_text") or ""
+        # Older/partial rows may not have stored the log. Retrieve it from the public replay API.
+        if not log_text.strip():
+            try:
+                detail = replay_detail(str(row["replay_id"]))
+                log_text = detail.get("log") or ""
+            except Exception:
+                log_text = ""
         if not log_text.strip():
             empty_logs += 1
             continue
+
         parsed = parse_log(log_text, row.get("p1") or "", row.get("p2") or "")
-        client.table("replays").update({
+        p1_selected = parsed["selected"]["p1"]
+        p2_selected = parsed["selected"]["p2"]
+        update_record = {
             "p1": parsed["players"].get("p1") or row.get("p1") or "",
             "p2": parsed["players"].get("p2") or row.get("p2") or "",
             "winner": parsed["winner"],
             "p1_team": json.dumps(parsed["teams"]["p1"], ensure_ascii=False),
             "p2_team": json.dumps(parsed["teams"]["p2"], ensure_ascii=False),
-            "p1_selected": json.dumps(parsed["selected"]["p1"], ensure_ascii=False),
-            "p2_selected": json.dumps(parsed["selected"]["p2"], ensure_ascii=False),
+            "p1_selected": json.dumps(p1_selected, ensure_ascii=False),
+            "p2_selected": json.dumps(p2_selected, ensure_ascii=False),
             "p1_leads": json.dumps(parsed["leads"]["p1"], ensure_ascii=False),
             "p2_leads": json.dumps(parsed["leads"]["p2"], ensure_ascii=False),
             "selection_confidence": json.dumps(parsed["confidence"], ensure_ascii=False),
-        }).eq("replay_id", row["replay_id"]).execute()
+            "log_text": log_text,
+            "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        client.table("replays").update(update_record).eq("replay_id", row["replay_id"]).execute()
         updated += 1
-    return updated, empty_logs
+        p1_nonempty += bool(p1_selected)
+        p2_nonempty += bool(p2_selected)
+    return updated, empty_logs, p1_nonempty, p2_nonempty
 
 
 def as_list(value: Any) -> list[str]:
@@ -353,10 +386,14 @@ with st.sidebar:
 if repair_selection:
     try:
         with st.spinner("保存済みログから選出情報を再解析しています…"):
-            updated_count, empty_log_count = reprocess_saved_selection_data()
-        st.success(f"再解析完了：{updated_count} 件を更新しました。")
+            updated_count, empty_log_count, p1_count, p2_count = reprocess_saved_selection_data()
+        st.success(
+            f"再解析完了：{updated_count} 件を更新。選出候補あり：P1 {p1_count} 件 / P2 {p2_count} 件。"
+        )
         if empty_log_count:
-            st.warning(f"ログ本文が保存されていないため、{empty_log_count} 件は再解析できません。")
+            st.warning(
+                f"Showdownからもログ本文を取得できず、{empty_log_count} 件は再解析できませんでした。"
+            )
         st.rerun()
     except Exception as exc:
         st.error(f"再解析に失敗しました: {exc}")
