@@ -273,67 +273,50 @@ def load_replays() -> pd.DataFrame:
 
 
 def reprocess_saved_selection_data() -> tuple[int, int, int, int]:
-    """Re-parse stored logs; fetch missing log bodies from Showdown when possible.
-
-    Returns (updated_rows, rows_still_without_log, p1_rows_with_selection, p2_rows_with_selection).
-    """
+    """Re-parse stored logs; fetch the public replay again when log_text is missing."""
     client = get_supabase()
-    rows: list[dict] = []
-    page_size = 500
-    offset = 0
-    while True:
-        response = (
-            client.table("replays")
-            .select("replay_id,p1,p2,log_text,format_id")
-            .eq("format_id", DEFAULT_FORMAT)
-            .range(offset, offset + page_size - 1)
-            .execute()
-        )
-        batch = response.data or []
-        rows.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-
+    response = client.table("replays").select(
+        "replay_id,p1,p2,log_text,replay_url,format_id"
+    ).eq("format_id", DEFAULT_FORMAT).execute()
+    rows = response.data or []
     updated = 0
+    fetched_logs = 0
     empty_logs = 0
-    p1_nonempty = 0
-    p2_nonempty = 0
+    observed_sides = 0
     for row in rows:
+        replay_id = row.get("replay_id")
         log_text = row.get("log_text") or ""
-        # Older/partial rows may not have stored the log. Retrieve it from the public replay API.
-        if not log_text.strip():
+        # Some older rows were saved without the full log. Re-fetch those from Showdown.
+        if not log_text.strip() and replay_id:
             try:
-                detail = replay_detail(str(row["replay_id"]))
+                detail = replay_detail(str(replay_id))
                 log_text = detail.get("log") or ""
+                if log_text.strip():
+                    fetched_logs += 1
             except Exception:
                 log_text = ""
         if not log_text.strip():
             empty_logs += 1
             continue
-
         parsed = parse_log(log_text, row.get("p1") or "", row.get("p2") or "")
-        p1_selected = parsed["selected"]["p1"]
-        p2_selected = parsed["selected"]["p2"]
+        if parsed["entered"]["p1"] or parsed["entered"]["p2"]:
+            observed_sides += 1
         update_record = {
             "p1": parsed["players"].get("p1") or row.get("p1") or "",
             "p2": parsed["players"].get("p2") or row.get("p2") or "",
             "winner": parsed["winner"],
             "p1_team": json.dumps(parsed["teams"]["p1"], ensure_ascii=False),
             "p2_team": json.dumps(parsed["teams"]["p2"], ensure_ascii=False),
-            "p1_selected": json.dumps(p1_selected, ensure_ascii=False),
-            "p2_selected": json.dumps(p2_selected, ensure_ascii=False),
+            "p1_selected": json.dumps(parsed["selected"]["p1"], ensure_ascii=False),
+            "p2_selected": json.dumps(parsed["selected"]["p2"], ensure_ascii=False),
             "p1_leads": json.dumps(parsed["leads"]["p1"], ensure_ascii=False),
             "p2_leads": json.dumps(parsed["leads"]["p2"], ensure_ascii=False),
             "selection_confidence": json.dumps(parsed["confidence"], ensure_ascii=False),
             "log_text": log_text,
-            "fetched_at": datetime.now().isoformat(timespec="seconds"),
         }
-        client.table("replays").update(update_record).eq("replay_id", row["replay_id"]).execute()
+        client.table("replays").update(update_record).eq("replay_id", replay_id).execute()
         updated += 1
-        p1_nonempty += bool(p1_selected)
-        p2_nonempty += bool(p2_selected)
-    return updated, empty_logs, p1_nonempty, p2_nonempty
+    return updated, fetched_logs, empty_logs, observed_sides
 
 
 def as_list(value: Any) -> list[str]:
@@ -386,14 +369,12 @@ with st.sidebar:
 if repair_selection:
     try:
         with st.spinner("保存済みログから選出情報を再解析しています…"):
-            updated_count, empty_log_count, p1_count, p2_count = reprocess_saved_selection_data()
-        st.success(
-            f"再解析完了：{updated_count} 件を更新。選出候補あり：P1 {p1_count} 件 / P2 {p2_count} 件。"
-        )
+            updated_count, fetched_log_count, empty_log_count, observed_side_count = reprocess_saved_selection_data()
+        st.success(f"再解析完了：{updated_count} 件を更新しました。場に出たポケモンを1体以上検出：{observed_side_count} 試合。")
+        if fetched_log_count:
+            st.info(f"ログをShowdownから再取得：{fetched_log_count} 件")
         if empty_log_count:
-            st.warning(
-                f"Showdownからもログ本文を取得できず、{empty_log_count} 件は再解析できませんでした。"
-            )
+            st.warning(f"Showdownからもログ本文を取得できなかったため、{empty_log_count} 件は再解析できません。")
         st.rerun()
     except Exception as exc:
         st.error(f"再解析に失敗しました: {exc}")
@@ -428,6 +409,304 @@ if collect:
         status.success(f"収集完了：新規 {count_saved} 件を保存")
         if log_rows:
             st.dataframe(pd.DataFrame(log_rows), use_container_width=True, hide_index=True)
+
+
+
+# --------------------------- Page navigation -------------------------------
+page = st.sidebar.radio(
+    "ページ",
+    ["分析ダッシュボード", "対策ノート"],
+    index=0,
+    key="main_page",
+)
+
+if page == "対策ノート":
+    st.title("📝 対策ノート")
+    st.caption("自分の構築ごとに、対戦前の作戦・初手の方針・対戦後の反省を保存します。")
+
+    def note_list(value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(x) for x in value if str(x).strip()]
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value) if isinstance(value, str) else value
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed if str(x).strip()]
+        except (ValueError, TypeError):
+            pass
+        return [x.strip() for x in str(value).replace(",", "\n").splitlines() if x.strip()]
+
+    def get_notes():
+        return get_supabase().table("strategy_notes").select("*").order(
+            "updated_at", desc=True
+        ).limit(1000).execute().data or []
+
+    def parse_species_input(value: str) -> list[str]:
+        # Accept one-per-line, comma-separated, or slash-separated species.
+        raw = re.split(r"[\n,/、／]+", value or "")
+        result = []
+        for item in raw:
+            species = item.strip()
+            if species and species not in result:
+                result.append(species)
+        return result[:6]
+
+    # Build known team choices from the replay table, retaining exact species names.
+    try:
+        replay_df_for_notes = load_replays()
+        if not replay_df_for_notes.empty:
+            replay_df_for_notes = replay_df_for_notes[
+                replay_df_for_notes["format_id"].fillna("").str.lower() == DEFAULT_FORMAT
+            ].copy()
+    except Exception:
+        replay_df_for_notes = pd.DataFrame()
+
+    team_choices: dict[str, list[str]] = {}
+    if not replay_df_for_notes.empty:
+        for _, rr in replay_df_for_notes.iterrows():
+            for side in ("p1", "p2"):
+                player_name = str(rr.get(side) or "")
+                if normalize_user(player_name) not in {normalize_user(x) for x in DEFAULT_BOTS}:
+                    continue
+                species = as_list(rr.get(f"{side}_team"))
+                key = team_key(species)
+                if key and species:
+                    team_choices[key] = species
+
+    team_keys = sorted(team_choices.keys(), key=lambda k: (-sum(1 for v in team_choices.values() if team_key(v) == k), k))
+    team_labels = {k: " / ".join(team_choices[k]) for k in team_keys}
+    team_options = ["手入力・未登録の構築"] + team_keys
+
+    try:
+        notes = get_notes()
+        notes_error = None
+    except Exception as exc:
+        notes = []
+        notes_error = str(exc)
+
+    if notes_error:
+        st.error(
+            "対策ノート用の Supabase テーブルに接続できません。"
+            "同梱の supabase_strategy_notes.sql を Supabase SQL Editor で実行してください。"
+            f"\n\n詳細: {notes_error}"
+        )
+        st.stop()
+
+    tab_new, tab_search, tab_edit = st.tabs(["➕ 新規ノート", "🔎 検索・一覧", "✏️ 編集・削除"])
+
+    with tab_new:
+        st.subheader("対戦前の作戦を登録")
+        st.caption("構築を選んでから、相手の6匹と初手プランを記録します。入力内容はSupabaseに保存されます。")
+        with st.form("strategy_note_create", clear_on_submit=True):
+            title = st.text_input("ノート名 *", placeholder="例：追い風＋高火力構築への対策")
+            chosen_team = st.selectbox(
+                "自分の構築 *",
+                team_options,
+                format_func=lambda k: "手入力・未登録の構築" if k == "手入力・未登録の構築" else team_labels.get(k, k),
+            )
+            if chosen_team == "手入力・未登録の構築":
+                own_team_text = st.text_area("自分の構築（最大6匹・改行または / 区切り）", height=90)
+            else:
+                own_team_text = ""
+                st.caption("選択中の自分の構築：" + team_labels.get(chosen_team, ""))
+            opponent_text = st.text_area(
+                "相手の構築（最大6匹・改行、カンマ、/ 区切り）",
+                height=110,
+                placeholder="Whimsicott\nCharizard\nBasculegion\nKingambit\nFloette-Eternal\nGarchomp",
+            )
+            col1, col2 = st.columns(2)
+            with col1:
+                lead_plan = st.text_input("自分の先発候補", placeholder="例：Rillaboom＋Incineroar")
+                opening_plan = st.text_area("初手の行動方針", height=120, placeholder="初手に何をするか、技・交代・守るの候補など")
+                conditions = st.text_area("対策を使う条件・分岐", height=90, placeholder="例：相手が追い風を選びそうなら…")
+            with col2:
+                threats = st.text_area("警戒する要素", height=120, placeholder="例：追い風、ねこだまし、トリックルーム")
+                next_action = st.text_area("次回に確認すること", height=90, placeholder="例：別の先発候補も試す")
+                replay_id = st.text_input("関連リプレイID（任意）", placeholder="例：gen9championsvgc2026regmc-2692405047")
+            submitted = st.form_submit_button("💾 対策ノートを保存", type="primary", use_container_width=True)
+
+        if submitted:
+            own_species = team_choices.get(chosen_team, []) if chosen_team != "手入力・未登録の構築" else parse_species_input(own_team_text)
+            opponent_species = parse_species_input(opponent_text)
+            if not title.strip():
+                st.error("ノート名を入力してください。")
+            elif not own_species:
+                st.error("自分の構築を選ぶか、少なくとも1匹を入力してください。")
+            elif len(own_species) > 6 or len(opponent_species) > 6:
+                st.error("構築は最大6匹まで登録できます。")
+            else:
+                record = {
+                    "title": title.strip(),
+                    "our_team_key": team_key(own_species),
+                    "our_team_species": own_species,
+                    "opponent_team": opponent_species,
+                    "lead_plan": lead_plan.strip(),
+                    "opening_plan": opening_plan.strip(),
+                    "threats": threats.strip(),
+                    "conditions": conditions.strip(),
+                    "result": "未対戦",
+                    "actual_leads": [],
+                    "review": "",
+                    "next_action": next_action.strip(),
+                    "replay_id": replay_id.strip() or None,
+                }
+                try:
+                    get_supabase().table("strategy_notes").insert(record).execute()
+                    st.success("対策ノートをSupabaseに保存しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"保存に失敗しました: {exc}")
+
+    with tab_search:
+        st.subheader("保存済みノートを検索")
+        search_col1, search_col2 = st.columns([2, 1])
+        with search_col1:
+            query = st.text_input("キーワード", placeholder="ノート名・ポケモン・初手・反省メモ")
+        with search_col2:
+            result_filter = st.selectbox("結果", ["すべて", "未対戦", "勝ち", "負け", "引き分け"])
+        team_filter_options = ["すべての構築"] + team_keys
+        team_filter = st.selectbox(
+            "自分の構築で絞り込み",
+            team_filter_options,
+            format_func=lambda k: "すべての構築" if k == "すべての構築" else team_labels.get(k, k),
+        )
+        filtered_notes = []
+        q = query.strip().casefold()
+        for note in notes:
+            if result_filter != "すべて" and (note.get("result") or "未対戦") != result_filter:
+                continue
+            if team_filter != "すべての構築" and note.get("our_team_key") != team_filter:
+                continue
+            haystack = " ".join([
+                str(note.get("title") or ""),
+                " ".join(note_list(note.get("our_team_species"))),
+                " ".join(note_list(note.get("opponent_team"))),
+                str(note.get("lead_plan") or ""),
+                str(note.get("opening_plan") or ""),
+                str(note.get("threats") or ""),
+                str(note.get("conditions") or ""),
+                str(note.get("review") or ""),
+                str(note.get("next_action") or ""),
+            ]).casefold()
+            if q and q not in haystack:
+                continue
+            filtered_notes.append(note)
+        st.caption(f"{len(filtered_notes)} 件")
+        if filtered_notes:
+            rows = []
+            for n in filtered_notes:
+                rows.append({
+                    "ID": n.get("id"),
+                    "ノート名": n.get("title", ""),
+                    "自分の構築": " / ".join(note_list(n.get("our_team_species"))),
+                    "相手の構築": " / ".join(note_list(n.get("opponent_team"))),
+                    "先発候補": n.get("lead_plan", ""),
+                    "結果": n.get("result") or "未対戦",
+                    "更新日時": str(n.get("updated_at") or n.get("created_at") or ""),
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            for n in filtered_notes:
+                with st.expander(f"📌 {n.get('title') or '名称未設定'} — {n.get('result') or '未対戦'}"):
+                    st.markdown("**自分の構築**：" + (" / ".join(note_list(n.get("our_team_species"))) or "未登録"))
+                    st.markdown("**相手の構築**：" + (" / ".join(note_list(n.get("opponent_team"))) or "未登録"))
+                    st.markdown("**先発候補**：" + (n.get("lead_plan") or "未登録"))
+                    st.markdown("**初手の行動方針**")
+                    st.write(n.get("opening_plan") or "未登録")
+                    st.markdown("**警戒する要素**")
+                    st.write(n.get("threats") or "未登録")
+                    st.markdown("**対策を使う条件**")
+                    st.write(n.get("conditions") or "未登録")
+                    st.markdown("**対戦後の振り返り**")
+                    st.write(n.get("review") or "まだ記録されていません")
+                    if n.get("replay_id"):
+                        st.link_button("関連リプレイを開く", f"{API_ROOT}/{n['replay_id']}")
+        else:
+            st.info("条件に一致する対策ノートはありません。")
+
+    with tab_edit:
+        st.subheader("ノートの編集・削除")
+        if not notes:
+            st.info("編集できるノートがありません。まず新規ノートを保存してください。")
+        else:
+            note_map = {
+                str(n.get("id")): f"{n.get('title') or '名称未設定'}｜{' / '.join(note_list(n.get('our_team_species'))[:3])}｜{n.get('result') or '未対戦'}"
+                for n in notes
+            }
+            chosen_id = st.selectbox("編集するノート", list(note_map.keys()), format_func=lambda k: note_map[k])
+            current = next(n for n in notes if str(n.get("id")) == chosen_id)
+            with st.form("strategy_note_edit"):
+                edit_title = st.text_input("ノート名 *", value=current.get("title") or "")
+                edit_own_team = st.text_area(
+                    "自分の構築（最大6匹）",
+                    value="\n".join(note_list(current.get("our_team_species"))),
+                    height=100,
+                )
+                edit_opponent = st.text_area(
+                    "相手の構築（最大6匹）",
+                    value="\n".join(note_list(current.get("opponent_team"))),
+                    height=100,
+                )
+                edit_lead = st.text_input("自分の先発候補", value=current.get("lead_plan") or "")
+                edit_opening = st.text_area("初手の行動方針", value=current.get("opening_plan") or "", height=120)
+                edit_threats = st.text_area("警戒する要素", value=current.get("threats") or "", height=90)
+                edit_conditions = st.text_area("対策を使う条件・分岐", value=current.get("conditions") or "", height=90)
+                edit_result = st.selectbox(
+                    "対戦結果",
+                    ["未対戦", "勝ち", "負け", "引き分け"],
+                    index=["未対戦", "勝ち", "負け", "引き分け"].index(current.get("result") or "未対戦")
+                    if (current.get("result") or "未対戦") in ["未対戦", "勝ち", "負け", "引き分け"] else 0,
+                )
+                edit_actual_leads = st.text_input(
+                    "実際の先発（任意）",
+                    value=" / ".join(note_list(current.get("actual_leads"))),
+                )
+                edit_review = st.text_area("対戦後の振り返り", value=current.get("review") or "", height=120)
+                edit_next = st.text_area("次回に確認すること", value=current.get("next_action") or "", height=90)
+                edit_replay = st.text_input("関連リプレイID（任意）", value=current.get("replay_id") or "")
+                save_edit = st.form_submit_button("変更を保存", type="primary", use_container_width=True)
+            if save_edit:
+                own_species = parse_species_input(edit_own_team)
+                opponent_species = parse_species_input(edit_opponent)
+                if not edit_title.strip():
+                    st.error("ノート名を入力してください。")
+                elif not own_species:
+                    st.error("自分の構築を1匹以上入力してください。")
+                else:
+                    update_record = {
+                        "title": edit_title.strip(),
+                        "our_team_key": team_key(own_species),
+                        "our_team_species": own_species,
+                        "opponent_team": opponent_species,
+                        "lead_plan": edit_lead.strip(),
+                        "opening_plan": edit_opening.strip(),
+                        "threats": edit_threats.strip(),
+                        "conditions": edit_conditions.strip(),
+                        "result": edit_result,
+                        "actual_leads": parse_species_input(edit_actual_leads),
+                        "review": edit_review.strip(),
+                        "next_action": edit_next.strip(),
+                        "replay_id": edit_replay.strip() or None,
+                    }
+                    try:
+                        get_supabase().table("strategy_notes").update(update_record).eq("id", chosen_id).execute()
+                        st.success("ノートを更新しました。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"更新に失敗しました: {exc}")
+
+            st.divider()
+            st.warning("削除したノートは復元できません。")
+            confirm_delete = st.checkbox("このノートを削除することを確認しました", key=f"delete_confirm_{chosen_id}")
+            if st.button("🗑️ このノートを削除", disabled=not confirm_delete, key=f"delete_note_{chosen_id}"):
+                try:
+                    get_supabase().table("strategy_notes").delete().eq("id", chosen_id).execute()
+                    st.success("ノートを削除しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"削除に失敗しました: {exc}")
+
+    st.stop()
 
 df = load_replays()
 if not df.empty:
@@ -530,7 +809,7 @@ else:
     )
 
     st.subheader("相手の構築に対する選出傾向")
-    st.caption("ここに表示するのは、リプレイで観測できた場への登場順です。未登場の選出ポケモンは復元できない場合があるため、選出率の確定値とは扱いません。")
+    st.caption("ここに表示するのは、リプレイログで実際に場に出たことを確認できたポケモンです。未登場の選出ポケモンは公開ログだけでは確定できません。選出判定欄の incomplete_selection_evidence は「4体すべて確認できなかった」という意味で、観測済みのポケモンまで無効という意味ではありません。")
     lead_counts = Counter()
     bring_counts = Counter()
     for _, row in selected_team_df.iterrows():

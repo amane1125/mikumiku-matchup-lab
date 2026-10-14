@@ -1,23 +1,20 @@
-# Mikumiku Matchup Lab
+# Mikumiku Matchup Lab — Strategy Notes update
 
-## Deploy / setup
+## Contents
+- `app.py`: Existing replay dashboard plus per-team strategy notes (create, search, edit, delete)
+- `supabase_strategy_notes.sql`: Adds the `strategy_notes` table without replacing `replays`
+- `requirements.txt`: Python dependencies
 
-1. Commit `app.py` and `requirements.txt` to the GitHub repository connected to Streamlit Community Cloud.
-2. In Supabase, open **SQL Editor** and run `supabase_schema.sql`.
-3. In Streamlit Community Cloud, open **App settings → Secrets** and set:
+## Deploy
+1. Back up the current GitHub `app.py`.
+2. In Supabase Dashboard → SQL Editor, run the existing `supabase_schema.sql` if not already installed.
+3. Run `supabase_strategy_notes.sql` in SQL Editor.
+4. Replace the repository `app.py` and `requirements.txt` with these files and commit.
+5. Keep Streamlit Secrets configured as `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+6. Restart/reboot the Streamlit app.
 
-```toml
-SUPABASE_URL = "https://YOUR_PROJECT.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY = "YOUR_SERVICE_ROLE_KEY"
-```
-
-Use the **service_role** key only in server-side Streamlit Secrets. Never commit it to the repository or expose it in a browser.
-4. Restart/reboot the Streamlit app.
-
-## Behavior
-
-- Format is fixed to `gen9championsvgc2026regmc` (Regulation M-C).
-- `mikumiku37` and `mikumiku38` are collected and analyzed together.
-- `replay_id` is the primary key, so a replay found through both accounts is counted only once.
-- Data is stored in Supabase, not the Streamlit instance's ephemeral local filesystem.
-- Team selection is inferred from species observed entering battle; it is not guaranteed to reproduce the exact bring-4 selection.
+## Notes
+- Existing `replays` data is not deleted or migrated.
+- Use the sidebar `ページ` selector to switch between `分析ダッシュボード` and `対策ノート`.
+- Strategy notes are stored per own-team species key. Team identity is based on species only; it does not distinguish items, moves, abilities, or Tera types.
+- `service_role` key must only be stored in Streamlit Secrets and must never be exposed in client-side code or committed to GitHub.
