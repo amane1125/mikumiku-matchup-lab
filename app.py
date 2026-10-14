@@ -493,7 +493,148 @@ if page == "対策ノート":
         )
         st.stop()
 
-    tab_new, tab_search, tab_edit = st.tabs(["➕ 新規ノート", "🔎 検索・一覧", "✏️ 編集・削除"])
+    tab_quick, tab_new, tab_search, tab_edit = st.tabs(["⚡ 並びクイック検索", "➕ 新規ノート", "🔎 検索・一覧", "✏️ 編集・削除"])
+
+    with tab_quick:
+        st.subheader("⚡ 相手の並びをすばやく検索")
+        st.caption("分かるポケモンだけ選べばOK。6匹すべて入力しなくても検索できます。")
+
+        # Build a mobile-friendly species picker from saved notes and collected replays.
+        species_pool = set()
+        for note in notes:
+            species_pool.update(note_list(note.get("opponent_team")))
+        quick_replays = replay_df_for_notes.copy() if not replay_df_for_notes.empty else pd.DataFrame()
+        if not quick_replays.empty:
+            for _, replay_row in quick_replays.iterrows():
+                p1_name = normalize_user(str(replay_row.get("p1") or ""))
+                p2_name = normalize_user(str(replay_row.get("p2") or ""))
+                if p1_name in {normalize_user(x) for x in DEFAULT_BOTS}:
+                    species_pool.update(as_list(replay_row.get("p2_team")))
+                elif p2_name in {normalize_user(x) for x in DEFAULT_BOTS}:
+                    species_pool.update(as_list(replay_row.get("p1_team")))
+        species_options = sorted((x for x in species_pool if x), key=str.casefold)
+
+        # Recent / saved opponent lineups become one-tap presets on mobile.
+        recent_lineups: list[tuple[str, list[str]]] = []
+        seen_lineups: set[tuple[str, ...]] = set()
+        for note in notes:
+            lineup = note_list(note.get("opponent_team"))[:6]
+            signature = tuple(sorted(normalize_user(x) for x in lineup if x))
+            if lineup and signature not in seen_lineups:
+                seen_lineups.add(signature)
+                recent_lineups.append((str(note.get("title") or "保存済み対策ノート"), lineup))
+        if not quick_replays.empty:
+            bot_norms_for_presets = {normalize_user(x) for x in DEFAULT_BOTS}
+            for _, replay_row in quick_replays.iterrows():
+                p1_name = normalize_user(str(replay_row.get("p1") or ""))
+                p2_name = normalize_user(str(replay_row.get("p2") or ""))
+                if p1_name in bot_norms_for_presets:
+                    lineup = as_list(replay_row.get("p2_team"))[:6]
+                elif p2_name in bot_norms_for_presets:
+                    lineup = as_list(replay_row.get("p1_team"))[:6]
+                else:
+                    continue
+                signature = tuple(sorted(normalize_user(x) for x in lineup if x))
+                if lineup and signature not in seen_lineups:
+                    seen_lineups.add(signature)
+                    recent_lineups.append(("過去リプレイ", lineup))
+                if len(recent_lineups) >= 8:
+                    break
+        if recent_lineups:
+            with st.expander("🕘 最近・保存済みの並びをワンタップ", expanded=True):
+                st.caption("以前に記録した相手なら、ボタンを押すだけで検索欄にセットできます。")
+                for preset_idx, (preset_title, preset_lineup) in enumerate(recent_lineups[:8]):
+                    label = f"{preset_title[:18]}：{' / '.join(preset_lineup[:6])}"
+                    if st.button(label, key=f"quick_lineup_preset_{preset_idx}", use_container_width=True):
+                        st.session_state["quick_species_picker"] = preset_lineup[:6]
+                        st.session_state["quick_min_matches"] = min(2, max(1, len(preset_lineup)))
+                        st.rerun()
+
+        quick_team_filter = st.selectbox(
+            "自分の構築（任意）", ["すべての構築"] + team_keys,
+            format_func=lambda k: "すべての構築" if k == "すべての構築" else team_labels.get(k, k),
+            key="quick_team_filter",
+        )
+        picked_species = st.multiselect(
+            "相手のポケモンを検索して追加（最大6匹）",
+            options=species_options, max_selections=6,
+            placeholder="タップして名前を入力・検索…", key="quick_species_picker",
+            help="候補欄に英語名の一部を入力すると絞り込めます。分かるポケモンだけ選択してください。",
+        )
+        controls = st.columns([3, 2])
+        with controls[0]:
+            quick_min = st.select_slider(
+                "最低一致数", options=[1, 2, 3, 4, 5, 6],
+                value=min(2, max(1, len(picked_species))),
+                format_func=lambda x: f"{x}匹以上", key="quick_min_matches",
+            )
+        with controls[1]:
+            st.write("")
+            st.write("")
+            if st.button("選択をクリア", use_container_width=True, key="clear_quick_species"):
+                st.session_state["quick_species_picker"] = []
+                st.rerun()
+        if not picked_species:
+            st.info("上の欄をタップして、相手のポケモンを1匹以上選んでください。名前を全部入力する必要はありません。")
+        else:
+            picked_norm = {normalize_user(x) for x in picked_species}
+            quick_results = []
+            for note in notes:
+                if quick_team_filter != "すべての構築" and note.get("our_team_key") != quick_team_filter:
+                    continue
+                opponent = note_list(note.get("opponent_team"))
+                overlap = [x for x in opponent if normalize_user(x) in picked_norm]
+                if len(overlap) >= quick_min:
+                    quick_results.append({"kind": "note", "score": len(overlap), "overlap": overlap, "data": note})
+            if not quick_replays.empty:
+                bot_norms = {normalize_user(x) for x in DEFAULT_BOTS}
+                for _, replay_row in quick_replays.iterrows():
+                    p1_name = normalize_user(str(replay_row.get("p1") or ""))
+                    p2_name = normalize_user(str(replay_row.get("p2") or ""))
+                    if p1_name in bot_norms:
+                        opponent = as_list(replay_row.get("p2_team")); own_species = as_list(replay_row.get("p1_team"))
+                    elif p2_name in bot_norms:
+                        opponent = as_list(replay_row.get("p1_team")); own_species = as_list(replay_row.get("p2_team"))
+                    else:
+                        continue
+                    if quick_team_filter != "すべての構築" and team_key(own_species) != quick_team_filter:
+                        continue
+                    overlap = [x for x in opponent if normalize_user(x) in picked_norm]
+                    if len(overlap) >= quick_min:
+                        quick_results.append({"kind": "replay", "score": len(overlap), "overlap": overlap, "data": replay_row.to_dict(), "opponent": opponent})
+            quick_results.sort(key=lambda r: (-r["score"], 0 if r["kind"] == "note" else 1))
+            st.markdown(f"**{len(quick_results)} 件ヒット**　・一致数が多い順")
+            if not quick_results:
+                st.warning("一致する記録がありません。一致条件を1匹に下げるか、別のポケモンを選んでください。")
+            for idx, item in enumerate(quick_results[:40], start=1):
+                if item["kind"] == "note":
+                    n = item["data"]
+                    with st.container(border=True):
+                        st.markdown(f"**📝 対策ノート：{n.get('title') or '名称未設定'}**")
+                        st.caption(f"一致 {item['score']}匹：{' / '.join(item['overlap'])}　｜　結果：{n.get('result') or '未対戦'}")
+                        st.markdown("**相手の並び**：" + (" / ".join(note_list(n.get("opponent_team"))) or "未登録"))
+                        st.markdown("**先発候補**：" + (n.get("lead_plan") or "未登録"))
+                        if n.get("opening_plan"):
+                            st.info("🎯 初手プラン\n\n" + str(n.get("opening_plan")))
+                        else:
+                            st.caption("初手プラン：未登録")
+                        if n.get("threats"):
+                            st.warning("⚠️ 警戒ポイント\n\n" + str(n.get("threats")))
+                        if n.get("next_action"):
+                            st.markdown("**次回やること**：" + str(n.get("next_action")))
+                else:
+                    r = item["data"]
+                    with st.container(border=True):
+                        st.markdown(f"**🎮 過去リプレイ：一致 {item['score']}匹**")
+                        st.caption("一致：" + " / ".join(item["overlap"]))
+                        st.markdown("**相手の並び**：" + (" / ".join(item.get("opponent", [])) or "不明"))
+                        bot_names = [str(r.get(k) or "") for k in ("p1", "p2")]
+                        st.caption(f"対戦者：{' vs '.join(x for x in bot_names if x)}　｜　ターン数：{r.get('turns_seen') or '不明'}")
+                        replay_url = r.get("replay_url") or f"{API_ROOT}/{r.get('replay_id')}"
+                        if replay_url:
+                            st.link_button("リプレイを開く", replay_url, use_container_width=True, key=f"quick_replay_{idx}")
+            if len(quick_results) > 40:
+                st.caption("表示は上位40件までです。ポケモンを追加すると絞り込めます。")
 
     with tab_new:
         st.subheader("対戦前の作戦を登録")
