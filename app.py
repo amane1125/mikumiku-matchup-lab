@@ -296,8 +296,8 @@ with st.sidebar:
     format_id = st.text_input("フォーマットID", value=DEFAULT_FORMAT)
     if format_id.strip().lower() != DEFAULT_FORMAT:
         st.warning("このツールはRegulation M-C専用です。フォーマットIDを gen9championsvgc2026regmc に戻してください。")
-    max_pages = st.slider("ユーザーごとの検索ページ数", 1, 10, 2,
-                          help="APIは検索1ページあたり最大51件。ページ数を増やすと取得に時間がかかります。")
+    max_pages = st.slider("ユーザーごとの検索ページ数", 1, 50, 10,
+                          help="APIは検索1ページあたり最大51件。10ページなら最大約510件／ユーザー、50ページなら最大約2,550件／ユーザーです。過去のリプレイほど取得に時間がかかります。")
     st.caption("Reg M-C専用の形式ID: gen9championsvgc2026regmc")
     collect = st.button("🔄 公開リプレイを収集", type="primary", use_container_width=True)
     st.divider()
@@ -410,13 +410,19 @@ team_df = pd.DataFrame(team_rows)
 if team_df.empty:
     st.warning("保存済みデータに対象BOTの対戦が見つかりません。ユーザー名・フォーマットID・公開リプレイの有無を確認してください。")
 else:
-    unique_teams = sorted(team_df["構築キー"].dropna().unique())
+    # 対戦数が多い構築を先頭に表示（同数の場合は構築キー順）。
+    team_match_counts = team_df["構築キー"].value_counts()
+    unique_teams = sorted(
+        team_match_counts.index.tolist(),
+        key=lambda key: (-int(team_match_counts[key]), str(key)),
+    )
     labels = {}
     for i, key in enumerate(unique_teams, 1):
         sample = team_df[team_df["構築キー"] == key].iloc[0]
         species = sample["構築（確認できた6体）"]
-        labels[key] = f"構築 {i} — {species[:75]}"
-    selected_key = st.selectbox("分析する構築", unique_teams, format_func=lambda x: labels.get(x, x))
+        matches = int(team_match_counts[key])
+        labels[key] = f"{i}位｜{matches}試合 — {species[:75]}"
+    selected_key = st.selectbox("分析する構築（試合数が多い順）", unique_teams, format_func=lambda x: labels.get(x, x))
     selected_team_df = team_df[team_df["構築キー"] == selected_key].copy()
 
     a, b, c = st.columns(3)
