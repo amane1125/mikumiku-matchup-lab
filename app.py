@@ -985,39 +985,63 @@ else:
     b.metric("勝率", f"{(known['勝敗'] == '勝ち').mean():.1%}" if len(known) else "—")
     c.metric("相手の並びの種類", selected_team_df["相手の6体"].nunique())
 
-    # Mobile-first replay cards: avoid the wide, horizontally scrolling dataframe
-    # whose toolbar and touch scrolling make rows difficult to tap on phones.
-    st.caption("各対戦をタップして詳細を確認できます。")
-    for card_index, (_, match) in enumerate(selected_team_df.iterrows()):
-        outcome = str(match.get("勝敗") or "不明")
-        result_icon = "🟢" if outcome == "勝ち" else ("🔴" if outcome == "負け" else "⚪")
+    # Group matches by opponent lineup so repeated teams appear as one compact mobile card.
+    st.caption("相手の並びが同じ対戦は1つにまとめ、選出候補とリプレイは折りたたんで表示します。")
+    selected_team_df["_相手キー"] = selected_team_df["相手の6体"].apply(
+        lambda value: team_key([x.strip() for x in str(value or "").split("/") if x.strip()])
+    )
+    opponent_groups = []
+    for opponent_key, group in selected_team_df.groupby("_相手キー", dropna=False, sort=False):
+        group = group.copy()
+        group = group.sort_values("日時", ascending=False)
+        sample = group.iloc[0]
+        wins_count = int((group["勝敗"] == "勝ち").sum())
+        losses_count = int((group["勝敗"] == "負け").sum())
+        unknown_count = int((~group["勝敗"].isin(["勝ち", "負け"])).sum())
+        decided_count = wins_count + losses_count
+        win_rate = f"{wins_count / decided_count:.1%}" if decided_count else "—"
+        opponent_groups.append((group, sample, wins_count, losses_count, unknown_count, win_rate))
+    opponent_groups.sort(key=lambda item: (-len(item[0]), str(item[1].get("相手の6体") or "")))
+
+    for group_index, (group, match, wins_count, losses_count, unknown_count, win_rate) in enumerate(opponent_groups):
+        outcome_summary = f"{wins_count}勝{losses_count}敗"
+        if unknown_count:
+            outcome_summary += f"・結果不明{unknown_count}"
+        opponent_species = [x.strip() for x in str(match.get("相手の6体") or "").split("/") if x.strip()]
         with st.container(border=True):
-            top_left, top_right = st.columns([3, 1])
-            with top_left:
-                st.markdown(f"**{result_icon} {outcome}**")
-            with top_right:
-                rating_value = match.get("レート")
-                st.caption(f"R: {int(rating_value)}" if pd.notna(rating_value) else "R: —")
-            st.markdown("**相手の並び**")
-            opponent_species = [x.strip() for x in str(match.get("相手の6体") or "").split("/") if x.strip()]
+            st.markdown(f"**相手の並び · {len(group)}試合**")
             render_species_icons(opponent_species, max_items=6, size=40)
-            info_left, info_right = st.columns(2)
-            with info_left:
-                st.caption("選出判定")
-                confidence = str(match.get("選出判定") or "不明")
-                st.write("4体観測" if confidence == "observed_entries_only" else
-                         ("観測不足" if confidence == "incomplete_selection_evidence" else confidence))
-            with info_right:
-                st.caption("日時")
-                st.write(str(match.get("日時") or "—"))
-            with st.expander("先発候補を表示"):
-                lead_species = [x.strip() for x in str(match.get("先発候補（ログ上の初登場2体）") or "").split("/") if x.strip()]
-                render_species_icons(lead_species, max_items=2, size=40)
-            with st.expander("選出候補・リプレイ"):
-                st.write(str(match.get("選出候補（ログ上で場に出た最大4体）") or "未観測"))
-                replay_url = str(match.get("リプレイ") or "")
-                if replay_url:
-                    st.link_button("🔗 リプレイを開く", replay_url, use_container_width=True)
+            metric_left, metric_mid, metric_right = st.columns(3)
+            metric_left.metric("対戦数", len(group))
+            metric_mid.metric("勝敗", outcome_summary)
+            metric_right.metric("勝率", win_rate)
+            with st.expander(f"選出候補・リプレイを表示（{len(group)}試合）"):
+                for replay_index, (_, replay_match) in enumerate(group.iterrows(), 1):
+                    outcome = str(replay_match.get("勝敗") or "不明")
+                    result_icon = "🟢" if outcome == "勝ち" else ("🔴" if outcome == "負け" else "⚪")
+                    st.markdown(f"**{replay_index}. {result_icon} {outcome}**")
+                    info_left, info_right = st.columns(2)
+                    with info_left:
+                        st.caption("選出判定")
+                        confidence = str(replay_match.get("選出判定") or "不明")
+                        st.write("4体観測" if confidence == "observed_entries_only" else
+                                 ("観測不足" if confidence == "incomplete_selection_evidence" else confidence))
+                    with info_right:
+                        st.caption("日時・レート")
+                        rating_value = replay_match.get("レート")
+                        rating_text = f"R: {int(rating_value)}" if pd.notna(rating_value) else "R: —"
+                        st.write(f"{replay_match.get('日時') or '日時不明'} · {rating_text}")
+                    with st.expander("先発候補"):
+                        lead_species = [x.strip() for x in str(replay_match.get("先発候補（ログ上の初登場2体）") or "").split("/") if x.strip()]
+                        render_species_icons(lead_species, max_items=2, size=40)
+                    st.markdown("**選出候補（ログ上で場に出た最大4体）**")
+                    selected_species = [x.strip() for x in str(replay_match.get("選出候補（ログ上で場に出た最大4体）") or "").split("/") if x.strip()]
+                    render_species_icons(selected_species, max_items=4, size=36)
+                    replay_url = str(replay_match.get("リプレイ") or "")
+                    if replay_url:
+                        st.link_button("🔗 リプレイを開く", replay_url, use_container_width=True)
+                    if replay_index < len(group):
+                        st.divider()
 
     st.subheader("相手の構築に対する選出傾向")
     st.caption("ここに表示するのは、リプレイログで実際に場に出たことを確認できたポケモンです。未登場の選出ポケモンは公開ログだけでは確定できません。選出判定欄の incomplete_selection_evidence は「4体すべて確認できなかった」という意味で、観測済みのポケモンまで無効という意味ではありません。")
