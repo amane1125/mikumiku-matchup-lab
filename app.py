@@ -942,12 +942,37 @@ else:
     b.metric("勝率", f"{(known['勝敗'] == '勝ち').mean():.1%}" if len(known) else "—")
     c.metric("相手の並びの種類", selected_team_df["相手の6体"].nunique())
 
-    st.dataframe(
-        selected_team_df[["相手の6体", "勝敗", "レート", "日時", "選出判定",
-                          "先発候補（ログ上の初登場2体）", "選出候補（ログ上で場に出た最大4体）", "リプレイ"]],
-        use_container_width=True, hide_index=True,
-        column_config={"リプレイ": st.column_config.LinkColumn("リプレイ", display_text="開く")}
-    )
+    # Mobile-first replay cards: avoid the wide, horizontally scrolling dataframe
+    # whose toolbar and touch scrolling make rows difficult to tap on phones.
+    st.caption("各対戦をタップして詳細を確認できます。")
+    for card_index, (_, match) in enumerate(selected_team_df.iterrows()):
+        outcome = str(match.get("勝敗") or "不明")
+        result_icon = "🟢" if outcome == "勝ち" else ("🔴" if outcome == "負け" else "⚪")
+        with st.container(border=True):
+            top_left, top_right = st.columns([3, 1])
+            with top_left:
+                st.markdown(f"**{result_icon} {outcome}**")
+            with top_right:
+                rating_value = match.get("レート")
+                st.caption(f"R: {int(rating_value)}" if pd.notna(rating_value) else "R: —")
+            st.markdown("**相手の並び**")
+            st.write(str(match.get("相手の6体") or "未取得"))
+            info_left, info_right = st.columns(2)
+            with info_left:
+                st.caption("選出判定")
+                confidence = str(match.get("選出判定") or "不明")
+                st.write("4体観測" if confidence == "observed_entries_only" else
+                         ("観測不足" if confidence == "incomplete_selection_evidence" else confidence))
+            with info_right:
+                st.caption("日時")
+                st.write(str(match.get("日時") or "—"))
+            st.caption("先発候補（ログ上で最初に登場した2体）")
+            st.write(str(match.get("先発候補（ログ上の初登場2体）") or "未観測"))
+            with st.expander("選出候補・リプレイ"):
+                st.write(str(match.get("選出候補（ログ上で場に出た最大4体）") or "未観測"))
+                replay_url = str(match.get("リプレイ") or "")
+                if replay_url:
+                    st.link_button("🔗 リプレイを開く", replay_url, use_container_width=True)
 
     st.subheader("相手の構築に対する選出傾向")
     st.caption("ここに表示するのは、リプレイログで実際に場に出たことを確認できたポケモンです。未登場の選出ポケモンは公開ログだけでは確定できません。選出判定欄の incomplete_selection_evidence は「4体すべて確認できなかった」という意味で、観測済みのポケモンまで無効という意味ではありません。")
@@ -975,7 +1000,16 @@ else:
         by_opp["勝率（判明分）"] = by_opp.apply(
             lambda r: f"{r['勝ち'] / (r['勝ち'] + r['負け']):.1%}" if r["勝ち"] + r["負け"] else "—", axis=1
         )
-        st.dataframe(by_opp, use_container_width=True, hide_index=True)
+        # Compact cards are easier to read and tap on narrow mobile screens.
+        for _, opp_row in by_opp.iterrows():
+            with st.container(border=True):
+                st.markdown(f"**相手の並び**")
+                st.write(str(opp_row["相手の6体"] or "未取得"))
+                metric_left, metric_mid, metric_right = st.columns(3)
+                metric_left.metric("対戦数", int(opp_row["対戦数"]))
+                metric_mid.metric("勝ち", int(opp_row["勝ち"]))
+                metric_right.metric("負け", int(opp_row["負け"]))
+                st.caption(f"勝率（判明分）：{opp_row['勝率（判明分）']}")
 
 st.subheader("全リプレイ一覧")
 show_cols = ["replay_id", "format_id", "p1", "p2", "winner", "rating", "uploadtime", "replay_url"]
@@ -983,8 +1017,21 @@ view_df = df[show_cols].copy()
 view_df["uploadtime"] = view_df["uploadtime"].apply(
     lambda x: datetime.fromtimestamp(x).strftime("%Y-%m-%d %H:%M") if pd.notna(x) and x else ""
 )
-st.dataframe(view_df, use_container_width=True, hide_index=True,
-             column_config={"replay_url": st.column_config.LinkColumn("URL", display_text="開く")})
+# Keep the full replay history usable on phones; put details behind an expander.
+for _, replay_row in view_df.head(100).iterrows():
+    with st.container(border=True):
+        st.markdown(f"**{replay_row.get('p1') or '?'} vs {replay_row.get('p2') or '?'}**")
+        st.caption(f"{replay_row.get('uploadtime') or '日時不明'} · {replay_row.get('format_id') or ''}")
+        result_text = "勝者：" + str(replay_row.get("winner") or "不明")
+        st.write(result_text)
+        with st.expander("リプレイ情報"):
+            st.write(f"ID：{replay_row.get('replay_id') or '—'}")
+            st.write(f"レート：{replay_row.get('rating') if pd.notna(replay_row.get('rating')) else '—'}")
+            replay_url = str(replay_row.get("replay_url") or "")
+            if replay_url:
+                st.link_button("🔗 リプレイを開く", replay_url, use_container_width=True)
+if len(view_df) > 100:
+    st.caption(f"スマホ表示は先頭100件です（全{len(view_df)}件）。CSVから全件を保存できます。")
 
 st.download_button(
     "⬇️ 収集データをCSVで保存",
