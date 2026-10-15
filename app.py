@@ -72,6 +72,17 @@ def species_from_details(details: str) -> str:
     first = re.sub(r"\s*\(.*?\)", "", first)
     return first
 
+
+def selection_species_key(species: str) -> str:
+    """Collapse Mega/form labels to the underlying species for distinct bring counts."""
+    name = re.sub(r"\s+", "-", (species or "").strip().lower())
+    name = name.replace("’", "").replace("'", "")
+    # Showdown may report a Mega form as Species-Mega, Species-Mega-X/Y,
+    # or a form label such as Floette-Mega / Floette-Eternal.
+    name = re.sub(r"-(?:mega(?:-[xy])?|eternal)$", "", name)
+    name = re.sub(r"^mega-", "", name)
+    return name
+
 def species_sprite_slug(species: str) -> str:
     """Convert a displayed species name to a Pokémon Showdown dex-sprite filename."""
     name = (species or "").strip().lower()
@@ -148,7 +159,10 @@ def parse_log(log_text: str, p1: str = "", p2: str = "") -> dict:
             side = match.group(1) if match else None
             if side in entered:
                 species = species_from_details(parts[3])
-                if species and species not in entered[side]:
+                # A Mega Evolution is the same selected Pokémon, not a new slot.
+                # Compare canonical species keys so a form change cannot inflate bring-4.
+                existing_keys = {selection_species_key(value) for value in entered[side]}
+                if species and selection_species_key(species) not in existing_keys:
                     entered[side].append(species)
         elif tag == "turn" and len(parts) >= 3:
             try:
