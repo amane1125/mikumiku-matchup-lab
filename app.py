@@ -404,8 +404,8 @@ with st.sidebar:
     format_id = st.text_input("フォーマットID", value=DEFAULT_FORMAT)
     if format_id.strip().lower() != DEFAULT_FORMAT:
         st.warning("このツールはRegulation M-C専用です。フォーマットIDを gen9championsvgc2026regmc に戻してください。")
-    max_pages = st.slider("ユーザーごとの検索ページ数", 1, 50, 10,
-                          help="APIは検索1ページあたり最大51件。10ページなら最大約510件／ユーザー、50ページなら最大約2,550件／ユーザーです。過去のリプレイほど取得に時間がかかります。")
+    max_pages = st.slider("ユーザーごとの検索ページ数", 1, 100, 20,
+                          help="APIは検索1ページあたり最大51件。20ページなら最大約1,020件／ユーザー、100ページなら最大約5,100件／ユーザーです。ページ数を増やすと収集に時間がかかります。まずは20〜50ページがおすすめです。")
     st.caption("Reg M-C専用の形式ID: gen9championsvgc2026regmc")
     collect = st.button("🔄 公開リプレイを収集", type="primary", use_container_width=True)
     st.divider()
