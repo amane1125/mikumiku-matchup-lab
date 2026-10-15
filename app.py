@@ -94,8 +94,8 @@ def species_sprite_slug(species: str) -> str:
     return aliases.get(name, name)
 
 
-def render_species_icons(species: list[str], *, max_items: int = 6, size: int = 72) -> None:
-    """Render compact Pokémon Showdown sprites with labels, suitable for mobile cards."""
+def render_species_icons(species: list[str], *, max_items: int = 6, size: int = 40) -> None:
+    """Render small pixel-style sprites in a compact row for mobile screens."""
     names = []
     for value in species or []:
         name = str(value).strip()
@@ -105,15 +105,15 @@ def render_species_icons(species: list[str], *, max_items: int = 6, size: int = 
     if not names:
         st.caption("ポケモン情報なし")
         return
-    columns = st.columns(min(3, len(names)))
-    for index, name in enumerate(names):
-        with columns[index % len(columns)]:
-            slug = species_sprite_slug(name)
-            st.image(
-                f"https://play.pokemonshowdown.com/sprites/dex/{slug}.png",
-                width=size,
-                caption=name,
-            )
+
+    # Pokémon Showdown's Gen 5 sprites are small pixel-art images.
+    # st.image(list) keeps them together in one compact horizontal strip.
+    sprite_urls = [
+        f"https://play.pokemonshowdown.com/sprites/gen5/{species_sprite_slug(name)}.png"
+        for name in names
+    ]
+    st.image(sprite_urls, width=size)
+    st.caption(" · ".join(names))
 
 
 def parse_log(log_text: str, p1: str = "", p2: str = "") -> dict:
@@ -1000,7 +1000,7 @@ else:
                 st.caption(f"R: {int(rating_value)}" if pd.notna(rating_value) else "R: —")
             st.markdown("**相手の並び**")
             opponent_species = [x.strip() for x in str(match.get("相手の6体") or "").split("/") if x.strip()]
-            render_species_icons(opponent_species, max_items=6, size=68)
+            render_species_icons(opponent_species, max_items=6, size=40)
             info_left, info_right = st.columns(2)
             with info_left:
                 st.caption("選出判定")
@@ -1010,9 +1010,9 @@ else:
             with info_right:
                 st.caption("日時")
                 st.write(str(match.get("日時") or "—"))
-            st.caption("先発候補（ログ上で最初に登場した2体）")
-            lead_species = [x.strip() for x in str(match.get("先発候補（ログ上の初登場2体）") or "").split("/") if x.strip()]
-            render_species_icons(lead_species, max_items=2, size=72)
+            with st.expander("先発候補を表示"):
+                lead_species = [x.strip() for x in str(match.get("先発候補（ログ上の初登場2体）") or "").split("/") if x.strip()]
+                render_species_icons(lead_species, max_items=2, size=40)
             with st.expander("選出候補・リプレイ"):
                 st.write(str(match.get("選出候補（ログ上で場に出た最大4体）") or "未観測"))
                 replay_url = str(match.get("リプレイ") or "")
