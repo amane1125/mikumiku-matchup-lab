@@ -86,7 +86,7 @@ def species_sprite_slug(species: str) -> str:
         "type-null": "type-null",
         "jangmo-o": "jangmo-o",
         "hakamo-o": "hakamo-o",
-        "kommo-o": "kommo-o",
+        "kommo-o": "kommoo",
         "farfetchd": "farfetchd",
         "sirfetchd": "sirfetchd",
         "flabebe": "flabebe",
