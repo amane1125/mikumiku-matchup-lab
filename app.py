@@ -72,6 +72,49 @@ def species_from_details(details: str) -> str:
     first = re.sub(r"\s*\(.*?\)", "", first)
     return first
 
+def species_sprite_slug(species: str) -> str:
+    """Convert a displayed species name to a Pokémon Showdown dex-sprite filename."""
+    name = (species or "").strip().lower()
+    name = name.replace("♀", "-f").replace("♂", "-m")
+    name = name.replace("’", "").replace("'", "")
+    name = re.sub(r"[^a-z0-9]+", "-", name).strip("-")
+    aliases = {
+        "nidoran-f": "nidoran-f",
+        "nidoran-m": "nidoran-m",
+        "mr-mime": "mr-mime",
+        "mime-jr": "mime-jr",
+        "type-null": "type-null",
+        "jangmo-o": "jangmo-o",
+        "hakamo-o": "hakamo-o",
+        "kommo-o": "kommo-o",
+        "farfetchd": "farfetchd",
+        "sirfetchd": "sirfetchd",
+        "flabebe": "flabebe",
+    }
+    return aliases.get(name, name)
+
+
+def render_species_icons(species: list[str], *, max_items: int = 6, size: int = 72) -> None:
+    """Render compact Pokémon Showdown sprites with labels, suitable for mobile cards."""
+    names = []
+    for value in species or []:
+        name = str(value).strip()
+        if name and name not in names:
+            names.append(name)
+    names = names[:max_items]
+    if not names:
+        st.caption("ポケモン情報なし")
+        return
+    columns = st.columns(min(3, len(names)))
+    for index, name in enumerate(names):
+        with columns[index % len(columns)]:
+            slug = species_sprite_slug(name)
+            st.image(
+                f"https://play.pokemonshowdown.com/sprites/dex/{slug}.png",
+                width=size,
+                caption=name,
+            )
+
 
 def parse_log(log_text: str, p1: str = "", p2: str = "") -> dict:
     """Extract only facts visible in the public battle log.
@@ -956,7 +999,8 @@ else:
                 rating_value = match.get("レート")
                 st.caption(f"R: {int(rating_value)}" if pd.notna(rating_value) else "R: —")
             st.markdown("**相手の並び**")
-            st.write(str(match.get("相手の6体") or "未取得"))
+            opponent_species = [x.strip() for x in str(match.get("相手の6体") or "").split("/") if x.strip()]
+            render_species_icons(opponent_species, max_items=6, size=68)
             info_left, info_right = st.columns(2)
             with info_left:
                 st.caption("選出判定")
@@ -967,7 +1011,8 @@ else:
                 st.caption("日時")
                 st.write(str(match.get("日時") or "—"))
             st.caption("先発候補（ログ上で最初に登場した2体）")
-            st.write(str(match.get("先発候補（ログ上の初登場2体）") or "未観測"))
+            lead_species = [x.strip() for x in str(match.get("先発候補（ログ上の初登場2体）") or "").split("/") if x.strip()]
+            render_species_icons(lead_species, max_items=2, size=72)
             with st.expander("選出候補・リプレイ"):
                 st.write(str(match.get("選出候補（ログ上で場に出た最大4体）") or "未観測"))
                 replay_url = str(match.get("リプレイ") or "")
