@@ -399,24 +399,34 @@ st.markdown(
     """
     <style>
     @media (max-width: 640px) {
-        [data-testid="stHorizontalBlock"] {
+        /* Only compact rows that actually contain metrics; leave other layouts alone. */
+        [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {
             flex-wrap: nowrap !important;
-            gap: 0.4rem !important;
+            gap: 0.25rem !important;
+            width: 100% !important;
         }
-        [data-testid="column"] {
+        [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > [data-testid="column"] {
             min-width: 0 !important;
+            width: 33.333% !important;
+            max-width: 33.333% !important;
+            flex: 1 1 33.333% !important;
+            padding-left: 0.1rem !important;
+            padding-right: 0.1rem !important;
         }
         [data-testid="stMetric"] {
-            padding: 0.25rem 0.1rem !important;
+            min-width: 0 !important;
+            padding: 0.2rem 0 !important;
         }
         [data-testid="stMetricValue"] {
-            font-size: 1.0rem !important;
+            font-size: 0.95rem !important;
             line-height: 1.2 !important;
             overflow-wrap: anywhere !important;
+            word-break: break-word !important;
         }
         [data-testid="stMetricLabel"] {
             font-size: 0.72rem !important;
             line-height: 1.15 !important;
+            overflow-wrap: anywhere !important;
         }
         [data-testid="stMetricDelta"] {
             font-size: 0.68rem !important;
