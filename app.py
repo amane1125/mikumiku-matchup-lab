@@ -399,6 +399,24 @@ st.markdown(
     """
     <style>
     @media (max-width: 640px) {
+        html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stMainBlockContainer"] {
+            max-width: 100% !important;
+            min-width: 0 !important;
+            overflow-x: hidden !important;
+            box-sizing: border-box !important;
+        }
+        [data-testid="stMainBlockContainer"] {
+            padding-left: 0.65rem !important;
+            padding-right: 0.65rem !important;
+        }
+        [data-testid="stVerticalBlock"],
+        [data-testid="stElementContainer"],
+        [data-testid="stMarkdown"],
+        [data-testid="stMarkdownContainer"] {
+            min-width: 0 !important;
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+        }
         [data-testid="stMetricValue"] {
             font-size: 0.95rem !important;
             line-height: 1.2 !important;
@@ -409,6 +427,37 @@ st.markdown(
             font-size: 0.72rem !important;
             line-height: 1.15 !important;
             overflow-wrap: anywhere !important;
+        }
+        .opponent-metrics {
+            display: grid !important;
+            grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+            gap: 0.35rem !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            max-width: 100% !important;
+            overflow: hidden !important;
+            box-sizing: border-box !important;
+        }
+        .opponent-metric {
+            min-width: 0 !important;
+            max-width: 100% !important;
+            overflow: hidden !important;
+            box-sizing: border-box !important;
+        }
+        .opponent-metric-label {
+            font-size: 0.72rem !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+        }
+        .opponent-metric-value {
+            font-size: 0.88rem !important;
+            line-height: 1.2 !important;
+            overflow-wrap: anywhere !important;
+            word-break: break-word !important;
+        }
+        [data-testid="stImage"] img {
+            max-width: 100% !important;
+            height: auto !important;
         }
     }
     </style>
