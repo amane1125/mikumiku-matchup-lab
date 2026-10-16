@@ -399,24 +399,6 @@ st.markdown(
     """
     <style>
     @media (max-width: 640px) {
-        /* Only compact rows that actually contain metrics; leave other layouts alone. */
-        [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {
-            flex-wrap: nowrap !important;
-            gap: 0.25rem !important;
-            width: 100% !important;
-        }
-        [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > [data-testid="column"] {
-            min-width: 0 !important;
-            width: 33.333% !important;
-            max-width: 33.333% !important;
-            flex: 1 1 33.333% !important;
-            padding-left: 0.1rem !important;
-            padding-right: 0.1rem !important;
-        }
-        [data-testid="stMetric"] {
-            min-width: 0 !important;
-            padding: 0.2rem 0 !important;
-        }
         [data-testid="stMetricValue"] {
             font-size: 0.95rem !important;
             line-height: 1.2 !important;
@@ -427,9 +409,6 @@ st.markdown(
             font-size: 0.72rem !important;
             line-height: 1.15 !important;
             overflow-wrap: anywhere !important;
-        }
-        [data-testid="stMetricDelta"] {
-            font-size: 0.68rem !important;
         }
     }
     </style>
@@ -1069,10 +1048,61 @@ else:
         with st.container(border=True):
             st.markdown(f"**相手の並び · {len(group)}試合**")
             render_species_icons(opponent_species, max_items=6, size=40)
-            metric_left, metric_mid, metric_right = st.columns(3)
-            metric_left.metric("対戦数", len(group))
-            metric_mid.metric("勝敗", outcome_summary)
-            metric_right.metric("勝率", win_rate)
+            st.markdown(
+                f"""
+                <div class="opponent-metrics">
+                    <div class="opponent-metric">
+                        <div class="opponent-metric-label">対戦数</div>
+                        <div class="opponent-metric-value">{len(group)}</div>
+                    </div>
+                    <div class="opponent-metric">
+                        <div class="opponent-metric-label">勝敗</div>
+                        <div class="opponent-metric-value">{outcome_summary}</div>
+                    </div>
+                    <div class="opponent-metric">
+                        <div class="opponent-metric-label">勝率</div>
+                        <div class="opponent-metric-value">{win_rate}</div>
+                    </div>
+                </div>
+                <style>
+                .opponent-metrics {{
+                    display: grid;
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                    gap: 0.5rem;
+                    width: 100%;
+                    max-width: 100%;
+                    box-sizing: border-box;
+                    margin: 0.8rem 0 1rem;
+                }}
+                .opponent-metric {{
+                    min-width: 0;
+                    overflow: hidden;
+                    box-sizing: border-box;
+                }}
+                .opponent-metric-label {{
+                    color: var(--text-color);
+                    opacity: 0.75;
+                    font-size: 0.82rem;
+                    line-height: 1.2;
+                    margin-bottom: 0.2rem;
+                    overflow-wrap: anywhere;
+                }}
+                .opponent-metric-value {{
+                    color: var(--text-color);
+                    font-size: 1.05rem;
+                    line-height: 1.25;
+                    overflow-wrap: anywhere;
+                    word-break: break-word;
+                }}
+                @media (max-width: 640px) {{
+                    .opponent-metrics {{ gap: 0.3rem; }}
+                    .opponent-metric-label {{ font-size: 0.75rem; }}
+                    .opponent-metric-value {{ font-size: 0.92rem; }}
+                }}
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
             with st.expander(f"選出候補・リプレイを表示（{len(group)}試合）"):
                 for replay_index, (_, replay_match) in enumerate(group.iterrows(), 1):
                     outcome = str(replay_match.get("勝敗") or "不明")
