@@ -392,6 +392,30 @@ def winner_for_player(row: pd.Series, player: str) -> bool | None:
 
 # ----------------------------- Streamlit UI --------------------------------
 st.set_page_config(page_title="Mikumiku Matchup Lab", page_icon="🎮", layout="wide")
+
+# Streamlit's default metric values are oversized on narrow mobile screens.
+# Reduce them only on phones so opponent-card stats remain compact and readable.
+st.markdown(
+    """
+    <style>
+    @media (max-width: 640px) {
+        [data-testid="stMetricValue"] {
+            font-size: 1.2rem !important;
+            line-height: 1.25 !important;
+            overflow-wrap: anywhere !important;
+        }
+        [data-testid="stMetricLabel"] {
+            font-size: 0.78rem !important;
+            line-height: 1.2 !important;
+        }
+        [data-testid="stMetricDelta"] {
+            font-size: 0.72rem !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 init_db()
 
 st.title("🎮 Mikumiku Matchup Lab")
