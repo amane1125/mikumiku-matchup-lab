@@ -399,17 +399,27 @@ st.markdown(
     """
     <style>
     @media (max-width: 640px) {
+        [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            gap: 0.4rem !important;
+        }
+        [data-testid="column"] {
+            min-width: 0 !important;
+        }
+        [data-testid="stMetric"] {
+            padding: 0.25rem 0.1rem !important;
+        }
         [data-testid="stMetricValue"] {
-            font-size: 1.2rem !important;
-            line-height: 1.25 !important;
+            font-size: 1.0rem !important;
+            line-height: 1.2 !important;
             overflow-wrap: anywhere !important;
         }
         [data-testid="stMetricLabel"] {
-            font-size: 0.78rem !important;
-            line-height: 1.2 !important;
+            font-size: 0.72rem !important;
+            line-height: 1.15 !important;
         }
         [data-testid="stMetricDelta"] {
-            font-size: 0.72rem !important;
+            font-size: 0.68rem !important;
         }
     }
     </style>
